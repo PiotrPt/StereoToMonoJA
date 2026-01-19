@@ -54,16 +54,12 @@
             this.btnProcess = new System.Windows.Forms.Button();
             this.progressBar = new System.Windows.Forms.ProgressBar();
             this.lblStatus = new System.Windows.Forms.Label();
-            this.groupBoxBenchmark = new System.Windows.Forms.GroupBox();
-            this.btnBenchmark = new System.Windows.Forms.Button();
-            this.txtBenchmarkResults = new System.Windows.Forms.TextBox();
             this.lblProcessingTime = new System.Windows.Forms.Label();
             this.groupBoxFiles.SuspendLayout();
             this.groupBoxDLL.SuspendLayout();
             this.groupBoxOptions.SuspendLayout();
             this.groupBoxThreads.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.trackBarThreads)).BeginInit();
-            this.groupBoxBenchmark.SuspendLayout();
             this.SuspendLayout();
             // 
             // groupBoxFiles
@@ -338,38 +334,6 @@
             this.lblStatus.TabIndex = 6;
             this.lblStatus.Text = "Ready";
             // 
-            // groupBoxBenchmark
-            // 
-            this.groupBoxBenchmark.Controls.Add(this.btnBenchmark);
-            this.groupBoxBenchmark.Controls.Add(this.txtBenchmarkResults);
-            this.groupBoxBenchmark.Location = new System.Drawing.Point(12, 264);
-            this.groupBoxBenchmark.Name = "groupBoxBenchmark";
-            this.groupBoxBenchmark.Size = new System.Drawing.Size(760, 170);
-            this.groupBoxBenchmark.TabIndex = 5;
-            this.groupBoxBenchmark.TabStop = false;
-            this.groupBoxBenchmark.Text = "Benchmark Results";
-            // 
-            // btnBenchmark
-            // 
-            this.btnBenchmark.Location = new System.Drawing.Point(650, 19);
-            this.btnBenchmark.Name = "btnBenchmark";
-            this.btnBenchmark.Size = new System.Drawing.Size(95, 30);
-            this.btnBenchmark.TabIndex = 1;
-            this.btnBenchmark.Text = "Run Benchmark";
-            this.btnBenchmark.UseVisualStyleBackColor = true;
-            this.btnBenchmark.Click += new System.EventHandler(this.btnBenchmark_Click);
-            // 
-            // txtBenchmarkResults
-            // 
-            this.txtBenchmarkResults.Font = new System.Drawing.Font("Consolas", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.txtBenchmarkResults.Location = new System.Drawing.Point(15, 19);
-            this.txtBenchmarkResults.Multiline = true;
-            this.txtBenchmarkResults.Name = "txtBenchmarkResults";
-            this.txtBenchmarkResults.ReadOnly = true;
-            this.txtBenchmarkResults.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtBenchmarkResults.Size = new System.Drawing.Size(625, 140);
-            this.txtBenchmarkResults.TabIndex = 0;
-            // 
             // lblProcessingTime
             // 
             this.lblProcessingTime.AutoSize = true;
@@ -386,7 +350,6 @@
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(784, 500);
             this.Controls.Add(this.lblProcessingTime);
-            this.Controls.Add(this.groupBoxBenchmark);
             this.Controls.Add(this.lblStatus);
             this.Controls.Add(this.progressBar);
             this.Controls.Add(this.btnProcess);
@@ -409,8 +372,6 @@
             this.groupBoxThreads.ResumeLayout(false);
             this.groupBoxThreads.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.trackBarThreads)).EndInit();
-            this.groupBoxBenchmark.ResumeLayout(false);
-            this.groupBoxBenchmark.PerformLayout();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -444,9 +405,6 @@
         private System.Windows.Forms.Button btnProcess;
         private System.Windows.Forms.ProgressBar progressBar;
         private System.Windows.Forms.Label lblStatus;
-        private System.Windows.Forms.GroupBox groupBoxBenchmark;
-        private System.Windows.Forms.Button btnBenchmark;
-        private System.Windows.Forms.TextBox txtBenchmarkResults;
         private System.Windows.Forms.Label lblProcessingTime;
     }
 }

@@ -205,7 +205,7 @@ ProcessLoopFloat8:
     
     vmovups YMMWORD PTR [rbx], ymm2      ; Store result
     
-    add rsi, 32                           ; 8 samples * 4 bytes
+    add rsi, 32                           ; 8 samples * 4 bytes sizew
     add rdi, 32
     add rbx, 32
     

@@ -207,6 +207,22 @@ namespace StereoToMonoJA
                 return;
             }
 
+            // NEW: reject mono input files early (read header on UI thread)
+            try
+            {
+                int channels = GetNumChannelsFromWav(txtInputFile.Text);
+                if (channels == 1)
+                {
+                    MessageBox.Show("Input file is already mono (1 channel). Please select a stereo WAV file.", "Invalid Input", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Cannot read WAV header: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
             // READ ALL UI CONTROL VALUES ON UI THREAD BEFORE STARTING BACKGROUND TASK
             string inputPath = txtInputFile.Text;
             string outputPath = txtOutputFile.Text;
@@ -253,46 +269,169 @@ namespace StereoToMonoJA
             }
         }
 
+        // Read number of channels from WAV file by parsing the 'fmt ' chunk. Throws on invalid files.
+        private int GetNumChannelsFromWav(string path)
+        {
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read))
+            using (BinaryReader br = new BinaryReader(fs))
+            {
+                // RIFF
+                var riff = br.ReadBytes(4);
+                if (riff.Length < 4 || System.Text.Encoding.ASCII.GetString(riff) != "RIFF")
+                    throw new Exception("Missing RIFF header");
+
+                br.ReadUInt32(); // file size
+                var wave = br.ReadBytes(4);
+                if (wave.Length < 4 || System.Text.Encoding.ASCII.GetString(wave) != "WAVE")
+                    throw new Exception("Missing WAVE header");
+
+                // search chunks
+                while (fs.Position + 8 <= fs.Length)
+                {
+                    string chunkId = System.Text.Encoding.ASCII.GetString(br.ReadBytes(4));
+                    uint chunkSize = br.ReadUInt32();
+
+                    if (chunkId == "fmt ")
+                    {
+                        if (chunkSize < 16) throw new Exception("Invalid fmt chunk");
+                        ushort audioFormat = br.ReadUInt16();
+                        ushort numChannels = br.ReadUInt16();
+                        return (int)numChannels;
+                    }
+
+                    // skip chunk data (word aligned)
+                    long next = fs.Position + chunkSize;
+                    if ((chunkSize & 1) == 1) next++;
+                    fs.Position = next;
+                }
+
+                throw new Exception("fmt chunk not found");
+            }
+        }
+
         private void ProcessWavFile(string inputPath, string outputPath, ProcessingOptions options)
         {
-            // Read WAV header
-            byte[] headerBytes = new byte[Marshal.SizeOf(typeof(WavHeader))];
+            // Robust WAV reader: find "fmt " and "data" chunks (skips extra chunks like LIST, JUNK, fact)
+            ushort audioFormat = 0;
+            ushort numChannels = 0;
+            uint sampleRate = 0;
+            ushort bitsPerSample = 0;
+            uint byteRate = 0;
+            ushort blockAlign = 0;
+            long dataChunkPos = -1;
+            uint dataChunkSize = 0;
+
+            using (FileStream fs = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
+            using (BinaryReader br = new BinaryReader(fs))
+            {
+                // RIFF header
+                var riff = br.ReadBytes(4);
+                if (riff.Length < 4 || System.Text.Encoding.ASCII.GetString(riff) != "RIFF")
+                    throw new Exception("Invalid WAV file: missing RIFF.");
+
+                br.ReadUInt32(); // file size
+                var wave = br.ReadBytes(4);
+                if (wave.Length < 4 || System.Text.Encoding.ASCII.GetString(wave) != "WAVE")
+                    throw new Exception("Invalid WAV file: missing WAVE.");
+
+                // Read chunks until we find 'fmt ' and 'data'
+                while (fs.Position + 8 <= fs.Length)
+                {
+                    string chunkId = System.Text.Encoding.ASCII.GetString(br.ReadBytes(4));
+                    uint chunkSize = br.ReadUInt32();
+
+                    long nextChunk = fs.Position + chunkSize;
+                    // align to WORD (chunks are word-aligned)
+                    if ((chunkSize & 1) == 1) nextChunk++;
+
+                    if (chunkId == "fmt ")
+                    {
+                        // read format info (minimum 16 bytes)
+                        if (chunkSize < 16) throw new Exception("Invalid fmt chunk.");
+
+                        audioFormat = br.ReadUInt16();
+                        numChannels = br.ReadUInt16();
+                        sampleRate = br.ReadUInt32();
+                        byteRate = br.ReadUInt32();
+                        blockAlign = br.ReadUInt16();
+                        bitsPerSample = br.ReadUInt16();
+
+                        // If there are extra fmt bytes (WAVE_FORMAT_EXTENSIBLE or others), read them
+                        int fmtExtra = (int)chunkSize - 16;
+                        if (fmtExtra > 0)
+                        {
+                            byte[] extra = br.ReadBytes(fmtExtra);
+                            // handle WAVE_FORMAT_EXTENSIBLE -> identify float subformat GUID
+                            if (audioFormat == 0xFFFE && fmtExtra >= 22)
+                            {
+                                // extra layout: cbSize(2) + validBitsPerSample(2) + channelMask(4) + subFormat(16)
+                                // subFormat starts at offset (fmtExtra - 16) from the start of extra only if cbSize >= 22
+                                // but here extra[0..] contains cbSize first; we locate GUID at offset 4
+                                int guidOffset = 4;
+                                if (extra.Length >= guidOffset + 16)
+                                {
+                                    byte[] subGuid = new byte[16];
+                                    Array.Copy(extra, guidOffset + 4, subGuid, 0, 12); // sometimes layout varies; fall back to best-effort below
+                                }
+                                // Simpler fallback: if bitsPerSample == 32 assume float for extensible
+                            }
+                            // nothing else required here - we just skip the extra bytes
+                        }
+                    }
+                    else if (chunkId == "data")
+                    {
+                        dataChunkPos = fs.Position;
+                        dataChunkSize = chunkSize;
+                        // we found data - break (we may want fmt as well, ensure fmt was read earlier)
+                        break;
+                    }
+                    
+
+                    fs.Position = nextChunk;
+                }
+            }
+
+            if (dataChunkPos < 0) throw new Exception("WAV 'data' chunk not found.");
+            if (numChannels != 2) throw new Exception("Input file must be stereo (2 channels).");
+
+            // Determine format: accept PCM (1) 16-bit or FLOAT (3) 32-bit.
+            bool isFloat = false;
+            if (audioFormat == 1 && bitsPerSample == 16)
+            {
+                isFloat = false;
+            }
+            else if (audioFormat == 3 && bitsPerSample == 32)
+            {
+                isFloat = true;
+            }
+            else if (audioFormat == 0xFFFE && bitsPerSample == 32)
+            {
+                // WAVE_FORMAT_EXTENSIBLE with 32 bits - treat as float if Audacity exported float
+                // (best-effort) - assume float if BitsPerSample==32
+                isFloat = true;
+            }
+            else
+            {
+                throw new Exception($"Unsupported WAV format: AudioFormat={audioFormat}, BitsPerSample={bitsPerSample}");
+            }
+
+            int bytesPerSample = bitsPerSample / 8;
+            uint numSamples = dataChunkSize / blockAlign; // frames (samples per channel)
+
+            // Read audio data from data chunk
+            byte[] audioData = new byte[dataChunkSize];
             using (FileStream fs = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
             {
-                fs.Read(headerBytes, 0, headerBytes.Length);
-            }
-
-            GCHandle handle = GCHandle.Alloc(headerBytes, GCHandleType.Pinned);
-            WavHeader header = (WavHeader)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(WavHeader));
-            handle.Free();
-
-            // Validate WAV file
-            if (header.ChunkID != 0x46464952 || header.Format != 0x45564157) // "RIFF" and "WAVE"
-            {
-                throw new Exception("Invalid WAV file format.");
-            }
-
-            if (header.NumChannels != 2)
-            {
-                throw new Exception("Input file must be stereo (2 channels).");
-            }
-
-            AudioFormat audioFormat = (AudioFormat)header.AudioFormat;
-            if (audioFormat != AudioFormat.PCM && audioFormat != AudioFormat.Float)
-            {
-                throw new Exception("Only PCM16 and Float32 formats are supported.");
-            }
-
-            bool isFloat = audioFormat == AudioFormat.Float;
-            int bytesPerSample = header.BitsPerSample / 8;
-            uint numSamples = header.Subchunk2Size / header.BlockAlign;
-
-            // Read audio data
-            byte[] audioData = new byte[header.Subchunk2Size];
-            using (FileStream fs = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
-            {
-                fs.Seek(headerBytes.Length, SeekOrigin.Begin);
-                fs.Read(audioData, 0, audioData.Length);
+                fs.Seek(dataChunkPos, SeekOrigin.Begin);
+                int read = 0;
+                while (read < audioData.Length)
+                {
+                    int r = fs.Read(audioData, read, audioData.Length - read);
+                    if (r == 0) break;
+                    read += r;
+                }
+                if (read != audioData.Length)
+                    throw new Exception("Could not read WAV data chunk fully.");
             }
 
             // Allocate buffers
@@ -301,13 +440,15 @@ namespace StereoToMonoJA
             byte[] rightData = new byte[numSamples * sampleSize];
             byte[] monoData = new byte[numSamples * sampleSize];
 
-            // De-interleave stereo to separate channels
+            // De-interleave stereo to separate channels (interleaved LRLR...)
             for (uint i = 0; i < numSamples; i++)
             {
-                int srcOffset = (int)(i * header.BlockAlign);
+                int srcOffset = (int)(i * blockAlign);
                 int dstOffset = (int)(i * sampleSize);
 
+                // copy left channel
                 Array.Copy(audioData, srcOffset, leftData, dstOffset, bytesPerSample);
+                // copy right channel
                 Array.Copy(audioData, srcOffset + bytesPerSample, rightData, dstOffset, bytesPerSample);
             }
 
@@ -396,120 +537,36 @@ namespace StereoToMonoJA
                 hMono.Free();
             }
 
-            // Write output WAV file
-            WavHeader outHeader = header;
+            // Prepare output header (mono)
+            WavHeader outHeader = new WavHeader();
+            outHeader.ChunkID = 0x46464952; // "RIFF"
+            outHeader.Format = 0x45564157;  // "WAVE"
+            outHeader.Subchunk1ID = 0x20746D66; // "fmt "
+            outHeader.Subchunk1Size = 16;
+            outHeader.AudioFormat = (ushort)(isFloat ? 3 : 1);
             outHeader.NumChannels = 1;
-            outHeader.BlockAlign = (ushort)(bytesPerSample);
+            outHeader.SampleRate = sampleRate;
+            outHeader.BitsPerSample = bitsPerSample;
+            outHeader.BlockAlign = (ushort)(outHeader.NumChannels * (outHeader.BitsPerSample / 8));
             outHeader.ByteRate = outHeader.SampleRate * outHeader.BlockAlign;
-            outHeader.Subchunk2Size = (uint)(numSamples * bytesPerSample);
+            outHeader.Subchunk2ID = 0x61746164; // "data"
+            outHeader.Subchunk2Size = (uint)(numSamples * outHeader.BlockAlign);
             outHeader.ChunkSize = 36 + outHeader.Subchunk2Size;
 
             using (FileStream fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
             {
-                // Write header
+
                 byte[] outHeaderBytes = new byte[Marshal.SizeOf(typeof(WavHeader))];
                 GCHandle hOutHeader = GCHandle.Alloc(outHeaderBytes, GCHandleType.Pinned);
                 Marshal.StructureToPtr(outHeader, hOutHeader.AddrOfPinnedObject(), false);
                 hOutHeader.Free();
                 fs.Write(outHeaderBytes, 0, outHeaderBytes.Length);
 
-                // Write mono audio data
+               
                 fs.Write(monoData, 0, monoData.Length);
             }
         }
 
-        private async void btnBenchmark_Click(object sender, EventArgs e)
-        {
-            btnBenchmark.Enabled = false;
-            txtBenchmarkResults.Text = "Running benchmark...\r\n";
-
-            try
-            {
-                string results = await Task.Run(() => RunBenchmark());
-                txtBenchmarkResults.Text = results;
-            }
-            catch (Exception ex)
-            {
-                txtBenchmarkResults.Text = $"Benchmark error: {ex.Message}";
-            }
-            finally
-            {
-                btnBenchmark.Enabled = true;
-            }
-        }
-
-        private string RunBenchmark()
-        {
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("Benchmark Results");
-            sb.AppendLine("=================");
-            sb.AppendLine();
-
-            int[] sampleCounts = { 44100, 441000, 4410000 }; // 1s, 10s, 100s @ 44.1kHz
-            int[] threadCounts = { 1, 2, 4, 8, 16 };
-
-            foreach (int samples in sampleCounts)
-            {
-                sb.AppendLine($"Sample Count: {samples:N0} ({samples / 44100.0:F1}s @ 44.1kHz)");
-                sb.AppendLine(new string('-', 70));
-
-                // Allocate test data
-                short[] leftPCM = new short[samples];
-                short[] rightPCM = new short[samples];
-                short[] monoPCM = new short[samples];
-
-                Random rand = new Random(42);
-                for (int i = 0; i < samples; i++)
-                {
-                    leftPCM[i] = (short)rand.Next(-32768, 32767);
-                    rightPCM[i] = (short)rand.Next(-32768, 32767);
-                }
-
-                GCHandle hLeft = GCHandle.Alloc(leftPCM, GCHandleType.Pinned);
-                GCHandle hRight = GCHandle.Alloc(rightPCM, GCHandleType.Pinned);
-                GCHandle hMono = GCHandle.Alloc(monoPCM, GCHandleType.Pinned);
-
-                try
-                {
-                    foreach (int threads in threadCounts)
-                    {
-                        // Benchmark C++
-                        Stopwatch sw = Stopwatch.StartNew();
-                        ProcessStereoToMonoPCM16(
-                            hLeft.AddrOfPinnedObject(),
-                            hRight.AddrOfPinnedObject(),
-                            hMono.AddrOfPinnedObject(),
-                            (UIntPtr)samples,
-                            0, false, false, false, false, threads);
-                        sw.Stop();
-                        double cppTime = sw.Elapsed.TotalMilliseconds;
-
-                        // Benchmark ASM
-                        sw.Restart();
-                        ProcessStereoToMonoPCM16_AVX2(
-                            hLeft.AddrOfPinnedObject(),
-                            hRight.AddrOfPinnedObject(),
-                            hMono.AddrOfPinnedObject(),
-                            (UIntPtr)samples,
-                            0, false, false, false, false, threads);
-                        sw.Stop();
-                        double asmTime = sw.Elapsed.TotalMilliseconds;
-
-                        double speedup = cppTime / asmTime;
-                        sb.AppendLine($"  Threads: {threads,2}  |  C++: {cppTime,8:F2}ms  |  ASM: {asmTime,8:F2}ms  |  Speedup: {speedup:F2}x");
-                    }
-                }
-                finally
-                {
-                    hLeft.Free();
-                    hRight.Free();
-                    hMono.Free();
-                }
-
-                sb.AppendLine();
-            }
-
-            return sb.ToString();
-        }
+        
     }
 }
