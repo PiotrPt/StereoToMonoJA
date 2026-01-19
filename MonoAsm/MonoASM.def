@@ -1,0 +1,5 @@
+LIBRARY MonoASM
+EXPORTS
+    ProcessStereoToMonoPCM16_AVX2
+    ProcessStereoToMonoFloat32_AVX2
+    GetVersion_ASM
